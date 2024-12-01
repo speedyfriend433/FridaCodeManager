@@ -24,54 +24,47 @@ import Foundation
 import SwiftUI
 import Darwin
 
-func typecheck(_ ProjectInfo: Project,_ erase: Bool,_ status: Binding<String>?,_ progress: Binding<Double>?) -> Int {
-    let info: [String] = ["\(ProjectInfo.ProjectPath)/Payload","\(ProjectInfo.ProjectPath)/Payload/\(ProjectInfo.Executable).app","\(ProjectInfo.ProjectPath)/Resources","\(global_sdkpath)/\(ProjectInfo.SDK)","\(ProjectInfo.ProjectPath)/clang","\(ProjectInfo.ProjectPath)/bridge.h","\(ProjectInfo.ProjectPath)/entitlements.plist","\(load("\(ProjectInfo.ProjectPath)/api.api"))"]
-    //PayloadPath  info[0]
-    //AppPath      info[1]
-    //Resources    info[2]
-    //SDKPath      info[3]
-    //ClangPath    info[4]
-    //ClangBridge  info[5]
-    //Entitlements info[6]
-    //API          info[7]
+@discardableResult func typecheck(_ ProjectInfo: Project, filePath: String, Content: String) -> String {
+    let info: [String] = ["\(global_sdkpath)/\(ProjectInfo.SDK)","\(load("\(ProjectInfo.ProjectPath)/api.api"))"]
+    //SDKPath      info[0]
+    //API Text     info[1]
 
     let fileManager = FileManager.default
 
-    if !fileManager.fileExists(atPath: info[3]) {
-       return 1;
+    if !fileManager.fileExists(atPath: info[0]) {
+       return "\(filePath):1:0: error: target SDK is not installed";
     }
-
-    //define build bash environment
-    let bashenv: [String] = ["SDKROOT=\(info[3])","CPATH=\(Bundle.main.bundlePath)/include","LIBRARY_PATH=\(info[3])/usr/lib","FRAMEWORK_PATH=/System/Library/Frameworks:/System/Library/PrivateFrameworks","HOME=\(global_container)/.cache/.\(ProjectInfo.SDK)"]
 
     var apiextension: ext = ext(build:"",build_sub: "",bef: "", aft:"", ign: "")
-    if !info[7].isEmpty {
-        apiextension = api(info[7], ProjectInfo)
+    if !info[1].isEmpty {
+        apiextension = api(info[1], ProjectInfo)
     }
 
-    //finding code files
-    let (MFiles, AFiles, SwiftFiles) = (FindFilesStack(ProjectInfo.ProjectPath, [".m", ".c", ".mm", ".cpp"], splitAndTrim(apiextension.ign) + ["Resources"]), FindFilesStack(ProjectInfo.ProjectPath, [".a"], splitAndTrim(apiextension.ign) + ["Resources"]), FindFilesStack(ProjectInfo.ProjectPath, [".swift"], splitAndTrim(apiextension.ign) + ["Resources"]))
+    var args: [String] = []
 
-    var EXEC = ""
-    if !SwiftFiles.isEmpty {
-        if !MFiles.isEmpty {
-            EXEC += MFiles.map { mFile in
-                "clang -D\(ProjectInfo.Macro) -fmodules -fsyntax-only \(apiextension.build_sub) -target arm64-apple-ios\(ProjectInfo.TG) -c \(ProjectInfo.ProjectPath)/\(mFile) \(AFiles.joined(separator: " ")) ; "
-            }.joined()
-        }
-        EXEC += """
-        swiftc -typecheck -D\(ProjectInfo.Macro) \(apiextension.build) \(SwiftFiles.map { "\(ProjectInfo.ProjectPath)/\($0)" }.joined(separator: " ")) \(AFiles.map { "\(ProjectInfo.ProjectPath)/\($0)" }.joined(separator: " ")) \
-        \(FileManager.default.fileExists(atPath: info[5]) ? "-import-objc-header '\(info[5])'" : "") -parse-as-library -target arm64-apple-ios\(ProjectInfo.TG)
-        """
-    } else {
-        EXEC += "clang -D\(ProjectInfo.Macro) -fmodules -fsyntax-only \(apiextension.build) -target arm64-apple-ios\(ProjectInfo.TG) \(MFiles.map { "\(ProjectInfo.ProjectPath)/\($0)" }.joined(separator: " ")) \(AFiles.map { "\(ProjectInfo.ProjectPath)/\($0)" }.joined(separator: " "))"
-    }
+    // selected macro
+    args.append("-D\(ProjectInfo.Macro)")
 
-    let (CDEXEC) = ("cd '\(ProjectInfo.ProjectPath)'")
+    // sdk root
+    args.append("-isysroot")
+    args.append("\(global_sdkpath)/\(ProjectInfo.SDK)")
 
-    //typechecking
-    _ = climessenger("","","\(CDEXEC) ; \(EXEC)", nil, bashenv)
+    // include paths
+    args.append("-I\(Bundle.main.bundlePath)/include")
+    #if jailbreak
+    args.append("-I\(jbroot)/usr/lib/clang/14.0.0/include")
+    #endif
 
-    return 0
+    // what we are building for
+    args.append("-target")
+    args.append("arm64-apple-ios\(ProjectInfo.TG)")
+
+    // what the api extension wants to extend
+    args += splitAndTrim(apiextension.build)
+
+    // the file path we wanna typecheck
+    args.append(filePath)
+
+    return typecheckC(args, Content);
 }
 

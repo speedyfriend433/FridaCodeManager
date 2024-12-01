@@ -28,7 +28,7 @@ private let invalidFS: Set<Character> = ["/", "\\", ":", "*", "?", "\"", "<", ">
 let MacroMGR = MacroManager()
 
 private enum ActiveSheet: Identifiable {
-    case create, rename, remove, impSheet
+    case create, rename, remove, commit, macro, impSheet
 
     var id: Int {
         hashValue
@@ -90,7 +90,6 @@ struct FileList: View {
     // GitHub
     @AppStorage("GIT_ENABLED") var enabled: Bool = false
     @AppStorage("GIT_TOKEN") var token: String = ""
-    @AppStorage("GIT_USERNAME") var username: String = ""
     var body: some View {
         List {
             Section {
@@ -124,7 +123,7 @@ struct FileList: View {
                                 potextfield = selpath
                                 activeSheet = .rename
                             }) {
-                                Label("Rename", systemImage: "rectangle.and.pencil.and.ellipsis")
+                                Label("Rename", systemImage: "pencil")
                             }
                         }
                         Section {
@@ -132,20 +131,20 @@ struct FileList: View {
                                 actpath = item.path
                                 action = 1
                             }) {
-                                Label("Copy", systemImage: "doc.on.doc")
+                                Label("Copy", systemImage: "doc.on.doc.fill")
                             }
                             Button(action: {
                                 actpath = item.path
                                 action = 2
                             }) {
-                                Label("Move", systemImage: "folder")
+                                Label("Move", systemImage: "folder.fill")
                             }
                         }
                         Section {
                             Button( action: {
-                                share(url: item)
+                                share(url: item, remove: false)
                             }) {
-                                Label("Share", systemImage: "square.and.arrow.up")
+                                Label("Share", systemImage: "square.and.arrow.up.fill")
                             }
                         }
                         Section {
@@ -154,7 +153,7 @@ struct FileList: View {
                                 activeSheet = .remove
                                 poheader = "Remove \"\(item.lastPathComponent)\"?"
                             }) {
-                                Label("Remove", systemImage: "trash")
+                                Label("Remove", systemImage: "trash.fill")
                             }
                         }
                     }
@@ -162,7 +161,7 @@ struct FileList: View {
             }
         }
         .refreshable {
-            await DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
                 withAnimation {
                     files = []
                 }
@@ -201,65 +200,96 @@ struct FileList: View {
                             }
                         }
                         Section {
-                            ForEach(macros, id:\.self) { item in
-                                Button( action: {
-                                    cmacro = item
-                                    MacroMGR.setCurrentMacro(to: item)
-                                    MacroMGR.savePlist()
-                                    project.Macro = cmacro
-                                }) {
-                                    if cmacro == item {
-                                        Label {
+                            Menu {
+                                ForEach(macros, id:\.self) { item in
+                                    Button( action: {
+                                        cmacro = item
+                                        MacroMGR.setCurrentMacro(to: item)
+                                        MacroMGR.savePlist()
+                                        project.Macro = cmacro
+                                    }) {
+                                        if cmacro == item {
+                                            Label {
+                                                Text(item)
+                                            } icon: {
+                                                Image(systemName: "checkmark")
+                                            }
+                                        } else {
                                             Text(item)
-                                        } icon: {
-                                            Image(systemName: "checkmark")
+                                        }
+                                    }
+                                }
+                            } label: {
+                                Label("Macro", systemImage: "scope")
+                            }
+                            if enabled {
+                                Menu {
+                                    if !FileManager.default.fileExists(atPath: "\(project.ProjectPath)/.git") {
+                                        Button("Create Repo") {
+                                            ShowAlert(UIAlertController(title: "Creating Repository", message: "", preferredStyle: .alert))
+                                            DispatchQueue.global(qos: .utility).async {
+                                                let result = createGitHubRepository(repositoryName: project.Executable, isPrivate: true, githubToken: token)
+                                                if result == 0 {
+                                                    guard var username = getGithubUsername(fromToken: token) else { return }
+                                                    username = username.trimmingCharacters(in: .whitespacesAndNewlines)
+                                                    let remoteUrl = "https://\(username):\(token)@github.com/\(username)/\(project.Executable).git"
+                                                    shell("""
+                                                         cd \(project.ProjectPath);
+                                                         git config --global init.defaultBranch master;
+                                                         git config --global http.postBuffer 157286400;
+                                                         git init;
+                                                         git branch -M master
+                                                         git add .;
+                                                         git commit -m \"Initial Commit\";
+                                                         git remote add origin \(remoteUrl);
+                                                         git push --set-upstream origin master
+                                                    """, uid: 501, env: [])
+                                                    if result == 0 {
+                                                        DispatchQueue.main.sync {
+                                                            DismissAlert {
+                                                                bindLoadFiles(directoryPath: directoryPath, files: $files)
+                                                            }
+                                                        }
+                                                    } else {
+                                                        DismissAlert {}
+                                                    }
+                                                } else {
+                                                    print("Failed to create GitHub repository")
+                                                }
+                                            }
                                         }
                                     } else {
-                                        Text(item)
-                                    }
-                                }
-                                .contextMenu {
-                                    Button(role: .destructive, action: {
-                                        MacroMGR.removeMacro(item)
-                                        MacroMGR.savePlist()
-                                        if let index = macros.firstIndex(of: item) {
-                                            macros.remove(at: index)
+                                        Button("Push") {
+                                            DispatchQueue.global(qos: .utility).async {
+                                                guard let username = getGithubUsername(fromToken: token) else { return }
+                                                let remoteUrl = "https://\(username):\(token)@github.com/\(username)/\(project.Executable).git"
+                                                shell("""
+                                                         cd \(project.ProjectPath);
+                                                         git config http.postBuffer 157286400;
+                                                         git remote set-url origin \(remoteUrl);
+                                                         git push;
+                                                         git remote set-url origin https://github.com/\(username)/\(project.Executable).git;
+                                                     """, uid: 501, env: [])
+                                            }
                                         }
-                                    }) {
-                                        Label("Remove", systemImage: "trash")
-                                    }
-                                }
-                            }
-                            Button(action: {
-                            }) {
-                                Label("New Macro", systemImage: "plus")
-                            }
-                        }
-                        if enabled {
-                            Section {
-                                if !FileManager.default.fileExists(atPath: "\(project.ProjectPath)/.git") {
-                                    Button("Create Repo") {
-                                        let result = createGitHubRepository(repositoryName: project.Executable, isPrivate: true, githubToken: token)
-                                        if result == 0 {
-                                            _ = shell("cd \(project.ProjectPath) && git init", uid: 501, env: [])
-                                            _ = shell("cd \(project.ProjectPath) && git branch -M main", uid: 501, env: [])  // Ensure 'main' branch is created
-                                            _ = shell("cd \(project.ProjectPath) && git add .", uid: 501, env: [])
-                                            let remoteUrl = "https://\(username):\(token)@github.com/\(username)/\(project.Executable).git"
-                                            _ = shell("cd \(project.ProjectPath) && git remote add origin \(remoteUrl)", uid: 501, env: [])
-                                            let pushResult = shell("cd \(project.ProjectPath) && git push -u origin main", uid: 501, env: [])
-                                            print("Push result: \(pushResult)")
-                                            _ = shell("cd \(project.ProjectPath) && git commit -m \"Initial Commit\"", uid: 501, env: [])
-                                            _ = shell("cd \(project.ProjectPath) && git push --set-upstream origin main", uid: 501, env: [])
-                                        } else {
-                                            print("Failed to create GitHub repository")
+                                        Button("Commit") {
+                                            activeSheet = .commit
+                                        }
+                                        Section {
+                                            Menu {
+                                                Button("Reset") {
+                                                    shell("""
+                                                              cd \(project.ProjectPath);
+                                                              git reset --hard;
+                                                          """)
+                                                }
+                                            } label: {
+                                                Text("Advanced")
+                                            }
                                         }
                                     }
-                                } else {
-                                    Button("Commit") {
-                                         _ = shell("cd \(project.ProjectPath) && git add .", uid: 501, env: [])
-                                         _ = shell("cd \(project.ProjectPath) && git commit -m \"Update\"", uid: 501, env: [])
-                                         _ = shell("cd \(project.ProjectPath) && git push", uid: 501, env: [])
-                                    }
+                                } label: {
+                                    Label("GitHub", systemImage: "globe.europe.africa.fill")
                                 }
                             }
                         }
@@ -313,6 +343,10 @@ struct FileList: View {
                                 POBHeader(title: $poheader)
                                 Spacer().frame(height: 10)
                                 POButtonBar(cancel: dissmiss_sheet, confirm: remove_selected)
+                            case .commit:
+                                POHeader(title: "Commit")
+                                POTextField(title: "Name", content: $potextfield)
+                                POButtonBar(cancel: dissmiss_sheet, confirm: github_commit)
                             default:
                                 Spacer()
                         }
@@ -337,10 +371,20 @@ struct FileList: View {
         }
     }
 
+    private func github_commit() -> Void {
+        let result = shell("cd \(project.ProjectPath); git add .; git commit -m \"\(potextfield)\"", uid: 501, env: [])
+        if result == 0 {
+            haptfeedback(1)
+        } else {
+            haptfeedback(2)
+        }
+        activeSheet = nil
+    }
+
     private func create_selected() -> Void {
         if !potextfield.isEmpty && potextfield.rangeOfCharacter(from: CharacterSet(charactersIn: String(invalidFS))) == nil {
             if type == 0 {
-                var content = ""
+            var content = ""
                 switch gsuffix(from: potextfield) {
                     case "swift", "c", "m", "mm", "cpp", "h", "hpp":
                         content = authorgen(file: potextfield)
@@ -349,7 +393,7 @@ struct FileList: View {
                         break
                 }
                 cfile(atPath: "\(directoryPath.path)/\(potextfield)", withContent: content)
-            } else {
+            } else {
                 cfolder(atPath: "\(directoryPath.path)/\(potextfield)")
             }
             haptfeedback(1)
@@ -578,7 +622,7 @@ private func bindLoadFiles(directoryPath: URL, files: Binding<[URL]>) -> Void {
                 }
             }
 
-            for (fileExtension, groupedFiles) in fileGroups.sorted(by: { $0.key < $1.key }) {
+            for (_, groupedFiles) in fileGroups.sorted(by: { $0.key < $1.key }) {
                 for file in groupedFiles {
                     DispatchQueue.main.async {
                         if !files.wrappedValue.contains(file) {
